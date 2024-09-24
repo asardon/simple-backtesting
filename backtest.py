@@ -51,13 +51,14 @@ def backtest_strategy(
     notional = df["price"].values[0]
     strategy_stop = False
     current_tenor_day = 0
-    start_nav = rel_option_premium * notional + notional
+    start_nav = notional
     cumulative_nav.append((df["date"].iloc[0], start_nav))
 
     for i in range(1, len(df)):
         current_price = df["price"].iloc[i]
         current_date = df["date"].iloc[i]
         price_data.append((current_date, current_price))
+        start_nav = rel_option_premium * notional + notional
 
         if not strategy_stop:
             if current_tenor_day == 0:
@@ -463,7 +464,32 @@ if __name__ == "__main__":
     eth_call_spline = plot_vol_surface(df, vol_shift, filename="vol_surface.png")
 
     strike_thresholds = [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]
-    tenors = [7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]
+    tenors = [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+    ]
 
     results_stop, results_continue, buy_and_hold_final_nav = compare_strategies(
         price_df, strike_thresholds, tenors, eth_call_spline, vol_shift
