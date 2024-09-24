@@ -31,10 +31,9 @@ def plot_heatmap_strategy_performance(df, title, filename="heatmap_plot.png"):
 
     plt.savefig(filename, bbox_inches="tight")
     print(f"Saved heatmap to {filename}")
-    plt.show()
 
 
-def backtest_strategy(
+def backtest_reinvesting_strategy(
     df, tenor, rel_strike, call_spline, vol_shift=0.0, stop_once_converted=True
 ):
     tenor = int(tenor)
@@ -48,43 +47,66 @@ def backtest_strategy(
     conversions = []
     price_data = []
     strike_prices = []
-    notional = df["price"].values[0]
+    notional_units_over_time = []
+
     strategy_stop = False
     current_tenor_day = 0
-    start_nav = notional
+    start_price = df["price"].values[0]
+
+    start_nav = df["price"].values[0] + df["price"].values[0] * rel_option_premium
+    notional_units = 1
+    end_nav = None
+
     cumulative_nav.append((df["date"].iloc[0], start_nav))
+    notional_units_over_time.append((df["date"].iloc[0], notional_units))
 
     for i in range(1, len(df)):
         current_price = df["price"].iloc[i]
         current_date = df["date"].iloc[i]
         price_data.append((current_date, current_price))
-        start_nav = rel_option_premium * notional + notional
 
         if not strategy_stop:
             if current_tenor_day == 0:
+                start_price = current_price
                 strike_price = current_price * rel_strike
                 strike_prices.append((current_date, strike_price))
+
+            # No premium is added here, reinvestment happens only at the end of the period
             cumulative_nav.append((current_date, start_nav))
             strike_prices.append((current_date, strike_price))
+            notional_units_over_time.append((current_date, notional_units))
+
             if current_tenor_day == tenor:
+                # End of tenor, process the option
                 if current_price >= strike_price:
-                    end_nav = rel_option_premium * notional + notional * rel_strike
+                    # Option is exercised, add strike price + premium for the next period
+                    end_nav = (
+                        notional_units * start_price * rel_option_premium
+                        + notional_units * start_price * rel_strike
+                    )
                     conversions.append((current_date, strike_price, end_nav))
                     strategy_stop = True if stop_once_converted else False
                 else:
-                    end_nav = rel_option_premium * notional + notional * (
-                        current_price / df["price"].iloc[i - tenor]
+                    # Option is not exercised, underlying value adjusts to price movement
+                    end_nav = (
+                        notional_units * start_price * rel_option_premium
+                        + notional_units * current_price
                     )
+
+                notional_units = end_nav / current_price
                 start_nav = end_nav
-                cumulative_nav.append((current_date, start_nav))
-                notional = start_nav
-                current_tenor_day = 0
+
+                current_tenor_day = 0  # Reset tenor period
+
             else:
                 current_tenor_day += 1
         else:
-            cumulative_nav.append((current_date, notional))
+            # Strategy stops after conversion, so no further NAV changes
+            cumulative_nav.append((current_date, start_nav))
+            notional_units_over_time.append((current_date, notional_units))
+
     final_nav = cumulative_nav[-1][1]
-    final_return = final_nav / df["price"].values[0] - 1
+    final_return = final_nav / df["price"].values[0] - 1  # Calculate total return
     return (
         final_nav,
         final_return,
@@ -94,14 +116,16 @@ def backtest_strategy(
         strike_prices,
         implied_vol,
         rel_option_premium,
+        notional_units_over_time,
     )
 
 
-def backtest_strategy_shifted_starts(
+def backtest_reinvesting_strategy_shifted_starts(
     df, tenor, rel_strike, call_spline, vol_shift=0.0, stop_once_converted=True
 ):
     total_final_nav = 0
     total_final_returns = 0
+    total_final_notional_units = 0
     num_shifts = tenor
     for start_shift in range(num_shifts):
         shifted_df = df.iloc[start_shift:].reset_index(drop=True)
@@ -114,20 +138,29 @@ def backtest_strategy_shifted_starts(
             _,
             implied_vol,
             rel_option_premium,
-        ) = backtest_strategy(
+            notional_units_over_time,
+        ) = backtest_reinvesting_strategy(
             shifted_df, tenor, rel_strike, call_spline, vol_shift, stop_once_converted
         )
         total_final_nav += final_nav
         total_final_returns += final_return
+        total_final_notional_units += notional_units_over_time[-1][1]
     avg_final_nav = total_final_nav / num_shifts
     avg_final_return = total_final_returns / num_shifts
-    return avg_final_nav, avg_final_return, implied_vol, rel_option_premium
+    avg_final_notional_units = total_final_notional_units / num_shifts
+    return (
+        avg_final_nav,
+        avg_final_return,
+        implied_vol,
+        rel_option_premium,
+        avg_final_notional_units,
+    )
 
 
 def compare_strategies(df, strike_thresholds, tenors, call_spline, vol_shift=0.0):
     results_stop = []
     results_continue = []
-    buy_and_hold_final_nav = df["price"].iloc[-1] / df["price"].iloc[0]
+    buy_and_hold_final_nav = df["price"].iloc[-1]
     for tenor in tenors:
         for rel_strike in strike_thresholds:
             for stop_once_converted in [True, False]:
@@ -136,7 +169,8 @@ def compare_strategies(df, strike_thresholds, tenors, call_spline, vol_shift=0.0
                     avg_final_return,
                     implied_vol,
                     rel_option_premium,
-                ) = backtest_strategy_shifted_starts(
+                    avg_final_notional_units,
+                ) = backtest_reinvesting_strategy_shifted_starts(
                     df, tenor, rel_strike, call_spline, vol_shift, stop_once_converted
                 )
                 result_entry = {
@@ -148,6 +182,7 @@ def compare_strategies(df, strike_thresholds, tenors, call_spline, vol_shift=0.0
                     "Stop @ Conversion": stop_once_converted,
                     "IV (%)": implied_vol * 100,
                     "Option Premium (%)": rel_option_premium * 100,
+                    "Avg. Notional Units": avg_final_notional_units,
                 }
                 if stop_once_converted:
                     results_stop.append(result_entry)
@@ -225,13 +260,17 @@ def plot_vol_surface(res, vol_shift, filename="vol_surface.png"):
     plt.savefig(filename, bbox_inches="tight")
     print(f"Vol surface with shift saved to {filename}")
 
-    plt.show()
-
     return spline
 
 
 def plot_best_strategy_vs_hold(
-    df, tenor, rel_strike, call_spline, vol_shift=0.0, stop_once_converted=True
+    df,
+    tenor,
+    rel_strike,
+    call_spline,
+    vol_shift=0.0,
+    stop_once_converted=False,
+    filename=None,
 ):
     (
         final_nav,
@@ -242,30 +281,84 @@ def plot_best_strategy_vs_hold(
         strike_prices,
         _,
         _,
-    ) = backtest_strategy(
+        notional_units_over_time,  # Include notional units over time from backtest
+    ) = backtest_reinvesting_strategy(
         df, tenor, rel_strike, call_spline, vol_shift, stop_once_converted
     )
-    plot_strategy_vs_spot(df, cumulative_nav, conversions, price_data, strike_prices)
-    plt.plot(
+
+    # Split cumulative NAV data into dates and values
+    nav_dates, nav_values = zip(*cumulative_nav)
+
+    # Create a figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(10, 12), gridspec_kw={"height_ratios": [10, 2]}
+    )
+
+    # Plot NAV and spot price on the first subplot (ax1)
+    ax1.plot(
         df["date"],
         df["price"],
-        label="Buy and Hold NAV",
-        color="purple",
-        linewidth=2,
+        label="Spot Price",
+        color="blue",
         linestyle="--",
+        alpha=0.7,
     )
-    plt.legend()
+    ax1.plot(
+        nav_dates,
+        nav_values,
+        label="Cumulative NAV (Call Writing)",
+        color="green",
+        linewidth=2,
+    )
+    strike_dates, strike_values = zip(*strike_prices)
+    ax1.plot(
+        strike_dates,
+        strike_values,
+        label="Strike Price",
+        color="red",
+        linestyle=":",
+        linewidth=2,
+    )
+    for conv_date, strike_price, _ in conversions:
+        ax1.scatter(conv_date, strike_price, color="red", marker="x", s=100)
+    ax1.set_ylabel("NAV / Spot Price")
+    ax1.set_title(
+        f"Strategy (Tenor: {tenor} days, Strike: {rel_strike * 100}%), Stop once converted: {stop_once_converted}"
+    )
+    ax1.legend()
+    ax1.grid(True)
+
+    # Plot notional units over time on the second subplot (ax2)
+    notional_dates, notional_units = zip(*notional_units_over_time)
+
+    ax2.plot(
+        notional_dates,
+        notional_units,
+        label="Notional Units",
+        color="orange",
+        linewidth=2,
+    )
+    ax2.set_ylabel("Notional Units")
+    ax2.set_xlabel("Date")
+    ax2.legend()
+    ax2.grid(True)
+
+    # Save the combined plot with both subplots
     title = (
         f"Best Stop @ Conversion Call Writing Strategy (Tenor: {tenor} days, Strike: {rel_strike * 100}%) vs. Buy and Hold"
         if stop_once_converted
         else f"Best Non-Stop Call Writing Strategy (Tenor: {tenor} days, Strike: {rel_strike * 100}%) vs. Buy and Hold"
     )
     plt.title(title)
+    filename = (
+        f"best_strategy_stop_at_conversion_{stop_once_converted}.png"
+        if filename is None
+        else filename
+    )
     plt.savefig(
-        f"best_strategy_stop_at_conversion_{stop_once_converted}.png",
+        filename,
         bbox_inches="tight",
     )
-    plt.show()
 
 
 def plot_strategy_vs_spot(df, cumulative_nav, conversions, price_data, strike_prices):
@@ -302,7 +395,7 @@ def plot_strategy_vs_spot(df, cumulative_nav, conversions, price_data, strike_pr
 
 
 def print_results_table(df, title):
-    df_sorted = df.sort_values(by="Avg. Final NAV", ascending=False).round(3)
+    df_sorted = df.sort_values(by="Avg. Notional Units", ascending=False).round(3)
 
     # Set column headers
     headers = [
@@ -313,6 +406,7 @@ def print_results_table(df, title):
         "Buy and Hold NAV",
         "IV (%)",
         "Option Premium (%)",
+        "Avg. Notional Units",
     ]
 
     # Calculate the maximum width for each column
@@ -456,15 +550,19 @@ def get_eth_vol_data(ccy="eth", iv_fitting_tol=0.1):
 
 
 if __name__ == "__main__":
-    price_df = get_historical_price_data(coin_id="apecoin", vs_currency="usd", days=365)
+    price_df = get_historical_price_data(
+        coin_id="ethereum", vs_currency="usd", days=365
+    )
 
-    vol_shift = 0.2
+    vol_shift = 0.0
 
     df = get_eth_vol_data()
     eth_call_spline = plot_vol_surface(df, vol_shift, filename="vol_surface.png")
 
-    strike_thresholds = [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]
+    strike_thresholds = [1.0, 1.05, 1.1, 1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]
     tenors = [
+        5,
+        6,
         7,
         8,
         9,
@@ -498,9 +596,9 @@ if __name__ == "__main__":
     print_results_table(results_stop, "Strategy Results (Stop After Conversion)")
     print_results_table(results_continue, "Strategy Results (No Stop After Conversion)")
 
-    best_strategy_stop = results_stop.loc[results_stop["Avg. Final NAV"].idxmax()]
+    best_strategy_stop = results_stop.loc[results_stop["Avg. Notional Units"].idxmax()]
     best_strategy_continue = results_continue.loc[
-        results_continue["Avg. Final NAV"].idxmax()
+        results_continue["Avg. Notional Units"].idxmax()
     ]
 
     plot_heatmap_strategy_performance(
