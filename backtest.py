@@ -463,7 +463,7 @@ if __name__ == "__main__":
     eth_call_spline = plot_vol_surface(df, vol_shift, filename="vol_surface.png")
 
     strike_thresholds = [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]
-    tenors = [7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 30, 40, 50, 60, 70, 80, 90]
+    tenors = [7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90]
 
     results_stop, results_continue, buy_and_hold_final_nav = compare_strategies(
         price_df, strike_thresholds, tenors, eth_call_spline, vol_shift
@@ -479,12 +479,12 @@ if __name__ == "__main__":
 
     plot_heatmap_strategy_performance(
         results_stop,
-        title="Strategies stop @ Conversion",
+        title="Strategies stop after Conversion",
         filename="strategies_plot_stop_at_conversion.png",
     )
     plot_heatmap_strategy_performance(
         results_continue,
-        title="Strategies continue @ Conversion",
+        title="Strategies no-stop after Conversion",
         filename="strategies_plot_continue_at_conversion.png",
     )
 
